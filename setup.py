@@ -4,12 +4,12 @@ from setuptools import find_packages, setup
 
 
 package_name = "dvrk_newton"
-script_files = ["scripts/simulator.py"]
+script_files = ["scripts/simulator.py", "scripts/bootstrap_venv.sh"]
 
 
 data_files = [
     ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
-    (f"share/{package_name}", ["package.xml"]),
+    (f"share/{package_name}", ["package.xml", "requirements.txt"]),
     (f"share/{package_name}/share", ["share/newton.yaml"]),
     (f"share/{package_name}/share/scenes", [
         str(path) for path in sorted(Path("share/scenes").glob("*.yaml"))

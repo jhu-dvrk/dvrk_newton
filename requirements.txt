@@ -1,0 +1,10 @@
+newton==1.6.0
+warp-lang>=1.17.0
+numpy
+scipy
+trimesh
+pycollada
+pyglet>=2.0
+pillow
+imgui-bundle
+PyYAML

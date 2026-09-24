@@ -49,12 +49,20 @@ This package runs hardware-accelerated robot kinematics and physics simulation o
 
 ## Environment Setup & Bootstrap
 
-Because Newton and Warp require specific GPU runtime libraries, a dedicated workspace virtual environment (`.venv-newton`) is used and cached in `.generated/newton/python-runtime.json`.
+Because Newton and Warp require specific GPU runtime libraries, dependencies are listed in `requirements.txt`. You can configure the environment in either of two ways:
 
-To bootstrap or update the virtual environment:
-```bash
-./src/dvrk/dvrk_newton/scripts/bootstrap_venv.sh
-```
+1. **Use the bootstrap script** to create a dedicated workspace virtual environment (`.venv-newton`) with `--system-site-packages` and install dependencies with pip:
+   ```bash
+   ./src/dvrk/dvrk_newton/scripts/bootstrap_venv.sh
+   ```
+   The script prompts for confirmation before creating the environment and installing packages from `requirements.txt`. (Pass `-y` or `--yes` to proceed non-interactively).
+
+2. **Use your own Python environment** and install dependencies using pip:
+   ```bash
+   pip install -r src/dvrk/dvrk_newton/requirements.txt
+   ```
+
+The selected interpreter is cached in `~/.cache/dvrk_newton/python-runtime.json`.
 
 To build the ROS 2 package:
 ```bash
@@ -113,29 +121,6 @@ The executable automatically re-executes into the Newton virtual environment if 
 ```bash
 ros2 run dvrk_newton simulator_node --model PSM1 --headless true
 ```
-
----
-
-## Published CRTK Topics
-
-When running (for example with `PSM1`), the node provides:
-- `/PSM1/measured_js`: Measured joint state (angles and velocities)
-- `/PSM1/setpoint_js`: Commanded joint setpoint
-- `/PSM1/measured_cp`: Measured tool tip Cartesian pose in world frame
-- `/PSM1/setpoint_cp`: Commanded Cartesian setpoint pose
-- `/PSM1/measured_cv`: Measured tool Cartesian twist
-- `/PSM1/jaw/measured_js`: Measured jaw angle
-- `/PSM1/operating_state`: CRTK operating state (`ENABLED`, `PAUSED`, etc.)
-- `/diagnostics`: Simulator diagnostic metrics (`simulation_hz`, `state_publish_hz`, `device`)
-
-### Command Topics
-- `/PSM1/servo_jp` (`sensor_msgs/msg/JointState`): Real-time joint servoing
-- `/PSM1/move_jp` (`sensor_msgs/msg/JointState`): Velocity-limited joint trajectories
-- `/PSM1/servo_cp` (`geometry_msgs/msg/PoseStamped`): Cartesian pose servoing (IK)
-- `/PSM1/move_cp` (`geometry_msgs/msg/PoseStamped`): Cartesian trajectory moves (IK)
-- `/PSM1/jaw/servo_jp` (`sensor_msgs/msg/JointState`): Jaw angle servoing
-- `/PSM1/jaw/move_jp` (`sensor_msgs/msg/JointState`): Jaw angle trajectory moves
-- `/PSM1/state_command` (`crtk_msgs/msg/StringStamped`): State commands (`enable`, `pause`, etc.)
 
 ---
 
