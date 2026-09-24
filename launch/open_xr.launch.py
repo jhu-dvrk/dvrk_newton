@@ -18,13 +18,12 @@ def generate_launch_description():
     package_share = Path(get_package_share_directory("dvrk_newton"))
     open_xr_directory = package_share / "share" / "open-xr"
     simulator_config = open_xr_directory / "newton.yaml"
-    scene = package_share / "share" / "scenes" / "ECM_PSM1_PSM2_PSM3.yaml"
     system_config = (
         open_xr_directory / "system-MTML-MTMR-OpenXR-patient-cart-ROS.json"
     )
     overlay_config = open_xr_directory / "dvrk-console-overlay.json"
 
-    from dvrk_newton.configuration import load_simulator_config
+    from dvrk_newton.configuration import load_simulator_config, resolve_scene_path
     from dvrk_newton.python_runtime import resolve_newton_python
     from dvrk_newton.urdf_materializer import default_generated_root
     from dvrk_simulator_base.rqt_perspective import (
@@ -33,6 +32,7 @@ def generate_launch_description():
     )
     newton_config = load_simulator_config(simulator_config)
     selection = resolve_newton_python(newton_config.generated_root)
+    scene = resolve_scene_path(simulator_config, "ECM_PSM1_PSM2_PSM3.yaml")
     rqt_perspective = write_monitor_perspective(
         (newton_config.generated_root or default_generated_root()) / "rqt" / "open-xr.perspective",
         ("ECM", "PSM1", "PSM2", "PSM3"), include_console=True,

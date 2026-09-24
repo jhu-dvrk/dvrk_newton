@@ -7,8 +7,8 @@ left and right ECM views into a side-by-side stream:
 - `ECM_PSM1_PSM2_PSM3.yaml` provides PSM1, PSM2, PSM3, and ECM through ROS;
 - `system-MTML-MTMR-OpenXR-patient-cart-ROS.json` imports those four ROS arms
   into `dvrk_system` and obtains MTML, MTMR, and console inputs from OpenXR;
-- `dvrk-console-overlay.json` consumes Newton's raw ECM image from
-  `@dvrk:newton:stereo_source` via Unix-FD / memfd zero-copy transport, adds the standard dVRK console overlay, and
+- `dvrk-console-overlay.json` consumes the raw ECM image from
+  `@dvrk:simulator:stereo_source` via Unix-FD / memfd zero-copy transport, adds the standard dVRK console overlay, and
   publishes `@dvrk:console:stereo_overlay`;
 - `sawOpenXR-newton-unixfd.json` receives that overlayed stream for the HMD.
 

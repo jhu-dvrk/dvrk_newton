@@ -86,6 +86,7 @@ def scene_search_paths(config_path: str | Path) -> tuple[Path, ...]:
     candidates = (
         config.parent / "scenes",
         package_share / "share" / "scenes",
+        simulator_base_share / "share" / "scenes",
         pybullet_share / "share" / "scenes",
         simulator_base_share / "share" / "exercises",
     )
@@ -119,6 +120,7 @@ def load_installed_scene_config(
     pybullet_share = Path(get_package_share_directory("dvrk_pybullet"))
     default_search = (
         newton_share / "share" / "scenes",
+        share / "share" / "scenes",
         pybullet_share / "share" / "scenes",
         share / "share" / "exercises",
     )
