@@ -1,5 +1,4 @@
 {
-  "$schema": "../schemas/openxr-video.schema.json",
   "name": "OpenXR",
   "video": {
     "type": "side-by-side",
