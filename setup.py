@@ -18,9 +18,6 @@ data_files = [
         str(path) for path in sorted(Path("share/open-xr").glob("*"))
         if path.is_file()
     ]),
-    (f"share/{package_name}/share/schemas", [
-        "share/schemas/openxr-video.schema.json",
-    ]),
     (f"share/{package_name}/launch", [
         "launch/open_xr.launch.py",
         "launch/simulator.launch.py",
