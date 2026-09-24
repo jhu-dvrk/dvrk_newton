@@ -1,0 +1,10 @@
+scene:
+  name: ECM_PSM1_PSM2
+  frames:
+    PSM1: {position: [-0.100000000, 0.000000000, 0.173205081], orientation_xyzw: [0.000000000, -0.258819045, 0.000000000, 0.965925826]}
+    PSM2: {position: [0.100000000, 0.000000000, 0.173205081], orientation_xyzw: [0.000000000, 0.258819045, 0.000000000, 0.965925826]}
+    ECM: {position: [0.000000000, -0.173205081, 0.100000000], orientation_xyzw: [0.500000000, 0.000000000, 0.000000000, 0.866025404]}
+  robots:
+    - {config: PSM1.yaml, instrument: "420006"}
+    - {config: PSM2.yaml, instrument: "420006"}
+    - {config: ECM.yaml, endoscope: "Si_straight"}

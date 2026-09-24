@@ -1,0 +1,7 @@
+command_queue_capacity: 32
+device: cuda:0
+generated_root: null
+headless: false
+scene: null
+simulation_rate_hz: 120.0
+state_publish_rate_hz: 100.0

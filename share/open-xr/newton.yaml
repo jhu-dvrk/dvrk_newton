@@ -1,0 +1,8 @@
+# Backend settings for the OpenXR patient-cart example in NVIDIA Newton.
+device: cuda:0
+headless: false
+simulation_rate_hz: 120.0
+state_publish_rate_hz: 100.0
+command_queue_capacity: 32
+generated_root: null
+scene: null
