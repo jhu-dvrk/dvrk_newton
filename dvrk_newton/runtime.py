@@ -13,18 +13,22 @@ from dvrk_arm_description import RobotConfig
 from dvrk_simulator_base.command_mailbox import CommandMailboxes
 from dvrk_simulator_base.operating_state import CRTKOperatingState
 from dvrk_simulator_base.rotations import quaternion_matrix_xyzw, rotation_to_quaternion_xyzw
+from dvrk_simulator_base.scene import SceneObject
 from dvrk_simulator_base.snapshots import ArmSnapshot, OperatingStateSnapshot
 from dvrk_simulator_base.trajectory import JointTrajectory
 from dvrk_simulator_base.types import IKResult, JointState, Pose, Twist
 
 from .backend import load_newton
 from .camera import CameraOptions, NewtonCameraRenderer
+from .configuration import GraspConfig
 from .errors import NewtonBackendError
+from .grasp import NewtonGraspManager
 from .robot import (
     LoadedRobot,
     add_robot_to_builder,
     build_robot_mapping,
 )
+from .scene_objects import LoadedSceneObject, add_scene_objects_to_builder
 from .urdf_materializer import MaterializedUrdf, materialize_virtual_robot
 from .video import UnixFdVideoSink
 
@@ -36,6 +40,9 @@ class NewtonRuntimeOptions:
     simulation_rate_hz: float = 120.0
     generated_root: Path | None = None
     camera_options: CameraOptions | None = None
+    scene_objects: tuple[SceneObject, ...] = ()
+    grasp_config: GraspConfig | None = None
+    rigid_gap_m: float = 0.005
 
 
 class _NewtonArmState:
@@ -119,6 +126,18 @@ class NewtonRuntime:
         self.builder = None
         self.model = None
         self.state = None
+        self._state_out = None
+        self.control = None
+        self.solver = None
+        self.collision = None
+        self.contacts = None
+        self.scene_objects: dict[str, LoadedSceneObject] = {}
+        self.grasp_manager: NewtonGraspManager | None = None
+        self._dynamic_body_indices: list[int] = []
+        self._initial_body_q: np.ndarray | None = None
+        self._initial_body_qd: np.ndarray | None = None
+        self._reset_requested = False
+
         self.viewer = None
         self.camera_renderer: NewtonCameraRenderer | None = None
         self.camera_sink: UnixFdVideoSink | None = None
@@ -132,6 +151,8 @@ class NewtonRuntime:
     def initialize(self) -> dict[str, ArmSnapshot]:
         """Materialize URDFs, build unified Newton model, and evaluate initial FK."""
         self.builder = self.newton.ModelBuilder()
+        self.builder.gravity = (0.0, 0.0, -9.81)
+        self.builder.rigid_gap = self.options.rigid_gap_m
 
         for arm_name, arm in self.arms.items():
             cfg = arm.config
@@ -146,11 +167,37 @@ class NewtonRuntime:
                 arm.artifact.urdf_path,
                 base_position=cfg.base_position,
                 base_orientation_xyzw=cfg.base_orientation_xyzw,
+                enable_self_collisions=False,
             )
+
+        # Mark all robot bodies as kinematic
+        for b_idx in range(self.builder.body_count):
+            self.builder.body_flags[b_idx] = self.newton.BodyFlags.KINEMATIC
+
+        # Add scene objects
+        self.scene_objects = add_scene_objects_to_builder(
+            self.builder, self.options.scene_objects
+        )
 
         self.model = self.builder.finalize(self.device)
         self.state = self.model.state()
+        self._state_out = self.model.state()
+        self.control = self.model.control()
         self._q_buffer = self.state.joint_q.numpy()
+        self._dynamic_body_indices = [
+            obj.body_index for obj in self.scene_objects.values() if obj.is_dynamic
+        ]
+        self._dynamic_body_joint_q: dict[int, int] = {}
+        for j_idx in range(self.builder.joint_count):
+            child_b = self.builder.joint_child[j_idx]
+            if child_b in self._dynamic_body_indices:
+                self._dynamic_body_joint_q[child_b] = self.builder.joint_q_start[j_idx]
+
+        # Collision pipeline and solver for dynamic objects
+        self.collision = self.newton.CollisionPipeline(self.model)
+        self.contacts = self.collision.contacts()
+        if self._dynamic_body_indices:
+            self.solver = self.newton.solvers.SolverXPBD(self.model)
 
         for arm_name, arm in self.arms.items():
             cfg = arm.config
@@ -173,6 +220,18 @@ class NewtonRuntime:
         # Commit to GPU state and evaluate forward kinematics
         self.state.joint_q.assign(self.wp.array(self._q_buffer, dtype=float, device=self.device))
         self.newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state)
+
+        # Initialize grasp manager
+        self.grasp_manager = NewtonGraspManager(
+            self.model,
+            self.arms,
+            self.scene_objects,
+            self.options.grasp_config,
+        )
+
+        # Cache initial state for resets
+        self._initial_body_q = self.state.body_q.numpy().copy()
+        self._initial_body_qd = self.state.body_qd.numpy().copy()
         self._is_initialized = True
 
         if not self.options.headless:
@@ -336,10 +395,103 @@ class NewtonRuntime:
             for m in arm.robot.mimic_joints:
                 self._q_buffer[m.q_index] = m.multiplier * self._q_buffer[m.source_q_index] + m.offset
 
-    def finish_step(self) -> dict[str, ArmSnapshot]:
-        """Apply joint configuration to state, compute FK, and create snapshots."""
+    def request_reset(self) -> None:
+        self._reset_requested = True
+
+    def _reset_scene(self) -> None:
+        if self.grasp_manager is not None:
+            self.grasp_manager.release_all()
+        for arm in self.arms.values():
+            arm.joint_setpoint = np.array(arm.config.home_position, dtype=float, copy=True)
+            arm.joint_velocity.fill(0.0)
+            arm.jaw_setpoint = 0.0
+            arm.jaw_velocity = 0.0
+            arm.cancel_motion()
+            for i, q_idx in enumerate(arm.robot.controlled_q_indices):
+                self._q_buffer[q_idx] = arm.joint_setpoint[i]
+            if arm.robot.jaw_q_index is not None:
+                self._q_buffer[arm.robot.jaw_q_index] = arm.jaw_setpoint
+            for m in arm.robot.mimic_joints:
+                self._q_buffer[m.q_index] = m.multiplier * self._q_buffer[m.source_q_index] + m.offset
+
+        if self._initial_body_q is not None and self._initial_body_qd is not None:
+            self.state.body_q.assign(
+                self.wp.array(self._initial_body_q, dtype=self.wp.transform, device=self.device)
+            )
+            self.state.body_qd.assign(
+                self.wp.array(self._initial_body_qd, dtype=self.wp.spatial_vector, device=self.device)
+            )
+            for b_idx, q_start in self._dynamic_body_joint_q.items():
+                self._q_buffer[q_start : q_start + 7] = self._initial_body_q[b_idx]
         self.state.joint_q.assign(self.wp.array(self._q_buffer, dtype=float, device=self.device))
         self.newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state)
+
+    def step(self) -> dict[str, ArmSnapshot]:
+        """Perform one complete simulation update cycle."""
+        if self._reset_requested:
+            self._reset_scene()
+            self._reset_requested = False
+        now_ns = time.monotonic_ns()
+        self.prepare_step(now_ns, now_ns * 1e-9)
+        return self.finish_step()
+
+    def finish_step(self) -> dict[str, ArmSnapshot]:
+        """Apply joint configuration to state, compute FK, step dynamics & grasp, and create snapshots."""
+        # 1. Update robot kinematics and velocities. Newton derives body_qd from
+        # joint_qd during FK; leaving joint_qd stale makes grasped objects appear
+        # stationary even while the commanded arm is moving.
+        joint_qd = self.state.joint_qd.numpy()
+        joint_qd.fill(0.0)
+        for arm in self.arms.values():
+            for i, q_idx in enumerate(arm.robot.controlled_q_indices):
+                joint_qd[q_idx] = arm.joint_velocity[i]
+            if arm.robot.jaw_q_index is not None:
+                joint_qd[arm.robot.jaw_q_index] = arm.jaw_velocity
+            for m in arm.robot.mimic_joints:
+                joint_qd[m.q_index] = m.multiplier * joint_qd[m.source_q_index]
+        self.state.joint_q.assign(self.wp.array(self._q_buffer, dtype=float, device=self.device))
+        self.state.joint_qd.assign(self.wp.array(joint_qd, dtype=float, device=self.device))
+        self.newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state)
+
+        # 2. Collision detection and grasp management
+        snapshots = self.snapshots()
+
+        if self.collision is not None:
+            self.collision.collide(self.state, self.contacts)
+
+        body_q_np = self.state.body_q.numpy()
+        body_qd_np = self.state.body_qd.numpy()
+
+        if self.grasp_manager is not None:
+            self.grasp_manager.step(snapshots, self.contacts, body_q_np, body_qd_np)
+            self.state.body_q.assign(self.wp.array(body_q_np, dtype=self.wp.transform, device=self.device))
+            self.state.body_qd.assign(self.wp.array(body_qd_np, dtype=self.wp.spatial_vector, device=self.device))
+
+        # 3. Step physics solver for dynamic objects
+        if self.solver is not None and self._dynamic_body_indices:
+            dt = 1.0 / self.options.simulation_rate_hz
+            self.solver.step(self.state, self._state_out, self.control, self.contacts, dt)
+            out_q = self._state_out.body_q.numpy()
+            out_qd = self._state_out.body_qd.numpy()
+
+            grasped_objects = {
+                att.object_body_index for att in (
+                    self.grasp_manager.attachments.values() if self.grasp_manager else ()
+                )
+            }
+            for b_idx in self._dynamic_body_indices:
+                if b_idx not in grasped_objects:
+                    body_q_np[b_idx] = out_q[b_idx]
+                    body_qd_np[b_idx] = out_qd[b_idx]
+
+            if self.grasp_manager is not None and self.grasp_manager.attachments:
+                self.grasp_manager.step(snapshots, None, body_q_np, body_qd_np)
+
+            for b_idx, q_start in self._dynamic_body_joint_q.items():
+                self._q_buffer[q_start : q_start + 7] = body_q_np[b_idx]
+
+            self.state.body_q.assign(self.wp.array(body_q_np, dtype=self.wp.transform, device=self.device))
+            self.state.body_qd.assign(self.wp.array(body_qd_np, dtype=self.wp.spatial_vector, device=self.device))
 
         self._simulation_time += 1.0 / self.options.simulation_rate_hz
         self._sequence += 1
@@ -368,12 +520,6 @@ class NewtonRuntime:
         for arm in self.arms.values():
             arm.operating_state_event_pending = False
         return snapshots
-
-    def step(self) -> dict[str, ArmSnapshot]:
-        """Perform one complete simulation update cycle."""
-        now_ns = time.monotonic_ns()
-        self.prepare_step(now_ns, now_ns * 1e-9)
-        return self.finish_step()
 
     def snapshots(self) -> dict[str, ArmSnapshot]:
         """Extract ArmSnapshot for each loaded robot arm."""

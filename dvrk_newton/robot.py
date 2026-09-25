@@ -50,6 +50,7 @@ def add_robot_to_builder(
     *,
     base_position: Iterable[float] = (0.0, 0.0, 0.0),
     base_orientation_xyzw: Iterable[float] = (0.0, 0.0, 0.0, 1.0),
+    enable_self_collisions: bool = False,
 ) -> None:
     """Add a robot URDF into a Newton ModelBuilder."""
     import warp as wp
@@ -67,6 +68,7 @@ def add_robot_to_builder(
         xform=xform,
         floating=False,
         collapse_fixed_joints=False,
+        enable_self_collisions=enable_self_collisions,
     )
 
 

@@ -67,6 +67,7 @@ class DvrkNewtonNode(Node):
             scene = load_installed_scene_config(scene_path)
             configs = scene.robots
             self.scene = scene
+            self.scene_objects = tuple(scene.objects)
             self.camera_options = CameraOptions.from_scene(scene.camera)
         else:
             model = model.upper()
@@ -75,6 +76,7 @@ class DvrkNewtonNode(Node):
             asset = endoscope if model == "ECM" else instrument
             configs = (load_installed_robot_config(model, asset),)
             self.scene = None
+            self.scene_objects = ()
             self.camera_options = None
 
         self.configs = tuple(configs)
@@ -272,6 +274,15 @@ def main(args=None) -> int:
             command_queue_capacity=config.command_queue_capacity,
         )
 
+        grasp = config.grasp
+        if grasp is not None:
+            node.get_logger().info(
+                "grasp tuning: "
+                f"close={grasp.close_threshold_rad:.3f} rad, "
+                f"release={grasp.release_threshold_rad:.3f} rad, "
+                f"break={grasp.break_distance_m:.3f} m/{grasp.break_orientation_rad:.3f} rad"
+            )
+
         runtime = NewtonRuntime(
             node.configs,
             NewtonRuntimeOptions(
@@ -280,6 +291,9 @@ def main(args=None) -> int:
                 simulation_rate_hz=node.simulation_rate_hz,
                 generated_root=node.generated_root,
                 camera_options=node.camera_options,
+                scene_objects=node.scene_objects,
+                grasp_config=config.grasp,
+                rigid_gap_m=config.rigid_gap_m,
             ),
             {name: interface.commands for name, interface in node.arm_interfaces.items()},
         )

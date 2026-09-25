@@ -1,7 +1,25 @@
 command_queue_capacity: 32
+grasp:
+  show_grasps: true
+  max_grasps_per_object: 0  # 0 means unlimited PSM grasps per object
+  policy: pose_error
+  close_threshold_rad: 0.04       # about 2.3 deg
+  release_threshold_rad: 0.08     # about 4.6 deg
+  break_distance_m: 0.01          # 10 mm
+  break_orientation_rad: 0.523599 # 30 deg
+  break_tension_force_n: 10.0     # N, force_torque policy only
+  break_shear_force_n: 10.0       # N, force_torque policy only
+  break_torque_nm: 0.25           # N m, force_torque policy only
+  break_load_duration_s: 0.05     # 50 ms above a load threshold
+  max_force_n: 100.0              # N
+  constraint_erp: 0.8
+  # Tool-local -Z is proximal, toward the wrist-yaw joint (3 mm).
+  contact_region_offset_m: [0.0, 0.0, -0.003]
+  contact_region_radius_m: 0.005  # 5 mm jaw-contact qualification radius
 device: cuda:0
 generated_root: null
 headless: false
+rigid_gap_m: 0.005
 scene: null
 simulation_rate_hz: 120.0
 state_publish_rate_hz: 100.0
