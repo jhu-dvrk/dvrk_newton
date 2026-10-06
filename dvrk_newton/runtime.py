@@ -141,6 +141,9 @@ class NewtonRuntime:
         self.viewer = None
         self.camera_renderer: NewtonCameraRenderer | None = None
         self.camera_sink: UnixFdVideoSink | None = None
+        self._video_frames_pushed = 0
+        self._video_rate_sample_at = time.monotonic()
+        self._video_rate_sample_count = 0
         self._last_camera_render_time = -1.0
         self._camera_interval = 0.0
         self._q_buffer = None
@@ -515,6 +518,7 @@ class NewtonRuntime:
                     self._simulation_time,
                 )
                 self.camera_sink.push(frame)
+                self._video_frames_pushed += 1
                 self._last_camera_render_time = self._simulation_time
 
         for arm in self.arms.values():
@@ -669,6 +673,15 @@ class NewtonRuntime:
                 time.sleep(remaining)
             else:
                 deadline = time.monotonic()
+
+    def take_camera_rate_hz(self) -> float:
+        """Return the camera frames pushed to the video sink over the last interval."""
+        now = time.monotonic()
+        elapsed = max(now - self._video_rate_sample_at, 1e-6)
+        count = self._video_frames_pushed - self._video_rate_sample_count
+        self._video_rate_sample_at = now
+        self._video_rate_sample_count = self._video_frames_pushed
+        return count / elapsed
 
     def shutdown(self) -> None:
         """Cleanup runtime resources."""

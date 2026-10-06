@@ -106,6 +106,7 @@ class DvrkNewtonNode(Node):
                 )
 
         self._publishing_enabled = True
+        self._runtime = None
         self._state_publish_rate_hz = state_rate
         self._state_publish_timer = self.create_timer(1.0 / state_rate, self._publish_latest)
         self._diagnostics = self.create_publisher(DiagnosticArray, "/diagnostics", 10)
@@ -155,6 +156,10 @@ class DvrkNewtonNode(Node):
         status.message = "running" if simulation_hz > 0.0 else "waiting for simulation"
         status.values = [
             KeyValue(key="simulation_hz", value=f"{simulation_hz:.1f}"),
+            KeyValue(
+                key="camera_hz",
+                value=f"{self._runtime.take_camera_rate_hz() if self._runtime else 0.0:.1f}",
+            ),
             KeyValue(key="state_publish_hz", value=f"{self._state_publish_rate_hz:.1f}"),
             KeyValue(key="device", value=str(self.device)),
             KeyValue(key="arms", value=str(len(self.arm_interfaces))),
@@ -297,6 +302,7 @@ def main(args=None) -> int:
             ),
             {name: interface.commands for name, interface in node.arm_interfaces.items()},
         )
+        node._runtime = runtime
 
         node.install_initial_snapshots(runtime.initialize())
         node.get_logger().info(
