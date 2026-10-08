@@ -10,7 +10,6 @@ import yaml
 
 from ament_index_python.packages import get_package_share_directory
 
-from dvrk_arm_description import RobotConfig, load_robot_config
 from dvrk_simulator_base.scene import SceneConfig, SceneResolver, load_scene_config
 
 
@@ -135,16 +134,6 @@ def load_simulator_config(path: str | Path) -> NewtonSimulatorConfig:
         grasp=grasp_config,
         scene=None if scene in (None, "") else str(scene),
     )
-
-
-def load_installed_robot_config(model: str, instrument: str) -> RobotConfig:
-    share = Path(get_package_share_directory("dvrk_arm_description"))
-    path = share / "arms" / f"{model}.yaml"
-    if not path.is_file():
-        raise RuntimeError(f"installed robot configuration does not exist: {path}")
-    if str(model).upper() == "ECM":
-        return load_robot_config(path, endoscope=instrument)
-    return load_robot_config(path, instrument=instrument)
 
 
 def scene_search_paths(config_path: str | Path) -> tuple[Path, ...]:

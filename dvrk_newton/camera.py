@@ -1,4 +1,4 @@
-"""ECM optical camera raytraced rendering in NVIDIA Newton using Warp."""
+"""ECM optical camera options and Warp raytraced rendering in Newton."""
 
 from __future__ import annotations
 
@@ -27,12 +27,16 @@ class CameraOptions:
     near_m: float = 0.005
     far_m: float = 10.0
     baseline_m: float = 0.006
+    renderer: str = "warp_raytrace"
 
     def __post_init__(self) -> None:
         mode = str(self.mode).lower()
+        renderer = str(self.renderer).lower()
         socket_reference = str(self.socket_path)
         if mode not in {"mono", "stereo"}:
             raise ValueError("camera mode must be 'mono' or 'stereo'")
+        if renderer not in {"warp_raytrace", "opengl"}:
+            raise ValueError("camera renderer must be 'warp_raytrace' or 'opengl'")
         if socket_reference.startswith("@dvrk:"):
             if len(socket_reference.split(":")) != 3:
                 raise ValueError(
@@ -56,6 +60,7 @@ class CameraOptions:
         if not np.isfinite(self.baseline_m) or self.baseline_m <= 0.0:
             raise ValueError("camera baseline must be finite and positive")
         object.__setattr__(self, "mode", mode)
+        object.__setattr__(self, "renderer", renderer)
         object.__setattr__(self, "socket_path", path)
 
     @property
@@ -88,6 +93,7 @@ class CameraOptions:
             near_m=float(settings.get("near_clip_m", 0.005)),
             far_m=float(settings.get("far_clip_m", 10.0)),
             baseline_m=float(settings.get("baseline_m", 0.006)),
+            renderer=str(settings.get("renderer", "warp_raytrace")),
         )
 
 
@@ -131,6 +137,12 @@ class NewtonCameraRenderer:
             camera_count=self.camera_count,
         )
         self.sequence = 0
+
+    def start(self) -> None:
+        """The raytracer is initialized when this renderer is constructed."""
+
+    def close(self) -> None:
+        """Release resources when the worker drops this renderer."""
 
     def render(self, state: Any, optical_pose: Pose, simulation_time: float) -> VideoFrame:
         """Render a mono or stereo frame at the given ECM optical pose."""

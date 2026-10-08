@@ -1,6 +1,7 @@
 """Start configured dVRK robots in NVIDIA Newton using the configured Python interpreter."""
 
 from pathlib import Path
+import sys
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -28,8 +29,8 @@ def _start_sim(context):
     script = package_share / "scripts" / "simulator.py"
 
     scene = LaunchConfiguration("scene").perform(context) or simulator_config.scene
-    model = LaunchConfiguration("model").perform(context)
-    instrument = LaunchConfiguration("instrument").perform(context)
+    if not scene:
+        raise ValueError("a scene is required")
     device = LaunchConfiguration("device").perform(context) or simulator_config.device
 
     headless_arg = LaunchConfiguration("headless").perform(context)
@@ -39,35 +40,29 @@ def _start_sim(context):
         headless = "true" if simulator_config.headless else "false"
 
     cmd = [
-        str(selection.path),
+        sys.executable,
         str(script),
         "--config", str(config_path),
         "--device", str(device),
         "--headless", str(headless),
     ]
 
-    if scene:
-        cmd.extend(["--scene", str(scene)])
-    else:
-        cmd.extend(["--model", str(model), "--instrument", str(instrument)])
+    cmd.extend(["--scene", str(scene)])
 
     actions = [
         LogInfo(
             msg=(
-                f"Starting NVIDIA Newton simulator on device '{device}' with Python {selection.path} "
+                f"Starting NVIDIA Newton simulator on device '{device}' with worker Python {selection.path} "
                 f"(selected via {selection.source})"
             )
         ),
-        ExecuteProcess(cmd=cmd, output="screen"),
+        ExecuteProcess(cmd=cmd, output="screen", additional_env={"DVRK_NEWTON_PYTHON": str(selection.path)}),
     ]
 
     if LaunchConfiguration("rqt").perform(context).lower() == "true":
-        if scene:
-            scene_config = resolve_scene_path(config_path, scene)
-            scene_description = load_installed_scene_config(scene_config)
-            arms = [robot.name for robot in scene_description.robots]
-        else:
-            arms = [model]
+        scene_config = resolve_scene_path(config_path, scene)
+        scene_description = load_installed_scene_config(scene_config)
+        arms = [robot.name for robot in scene_description.robots]
 
         perspective = write_monitor_perspective(
             (simulator_config.generated_root or default_generated_root()) / "rqt" / "monitor.perspective",
@@ -97,14 +92,6 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "scene", default_value="",
             description="Scene YAML path or installed scene filename",
-        ),
-        DeclareLaunchArgument(
-            "model", default_value="PSM1",
-            description="Robot model (PSM1, PSM2, PSM3, ECM) when no scene is specified",
-        ),
-        DeclareLaunchArgument(
-            "instrument", default_value="420006",
-            description="Instrument type for PSM when no scene is specified",
         ),
         DeclareLaunchArgument(
             "device", default_value="",

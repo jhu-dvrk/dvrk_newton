@@ -4,7 +4,9 @@ import numpy as np
 import pytest
 
 from dvrk_simulator_base.command_mailbox import CommandMailboxes
-from dvrk_newton.configuration import load_installed_robot_config
+from pathlib import Path
+from ament_index_python.packages import get_package_share_directory
+from dvrk_arm_description import load_robot_config
 from dvrk_newton.robot import add_robot_to_builder, build_robot_mapping
 from dvrk_newton.runtime import NewtonRuntime, NewtonRuntimeOptions
 from dvrk_newton.urdf_materializer import materialize_virtual_robot
@@ -12,12 +14,12 @@ from dvrk_newton.urdf_materializer import materialize_virtual_robot
 
 @pytest.fixture
 def psm1_config():
-    return load_installed_robot_config("PSM1", "420006")
+    return load_robot_config(Path(get_package_share_directory("dvrk_arm_description")) / "arms/PSM1.yaml", instrument="420006")
 
 
 @pytest.fixture
 def ecm_config():
-    return load_installed_robot_config("ECM", "Si_straight")
+    return load_robot_config(Path(get_package_share_directory("dvrk_arm_description")) / "arms/ECM.yaml", endoscope="Si_straight")
 
 
 def test_materializer_psm_and_ecm():

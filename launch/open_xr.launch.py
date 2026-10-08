@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
@@ -40,7 +41,7 @@ def generate_launch_description():
 
     simulator = ExecuteProcess(
         cmd=[
-            str(selection.path),
+            sys.executable,
             str(package_share / "scripts" / "simulator.py"),
             "--config", str(simulator_config),
             "--scene", str(scene),
@@ -48,6 +49,7 @@ def generate_launch_description():
             "--headless", LaunchConfiguration("headless"),
         ],
         output="screen",
+        additional_env={"DVRK_NEWTON_PYTHON": str(selection.path)},
     )
     dvrk_system = Node(
         package="dvrk_robot",
@@ -123,7 +125,7 @@ def generate_launch_description():
             ),
             LogInfo(
                 msg=(
-                    f"Starting NVIDIA Newton simulator with Python {selection.path} "
+                    f"Starting NVIDIA Newton simulator with worker Python {selection.path} "
                     f"(selected via {selection.source})"
                 )
             ),

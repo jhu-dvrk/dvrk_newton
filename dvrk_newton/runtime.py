@@ -6,11 +6,14 @@ from dataclasses import dataclass
 from pathlib import Path
 import time
 from typing import Mapping, Sequence
+import xml.etree.ElementTree as ET
 
 import numpy as np
 
 from dvrk_arm_description import RobotConfig
 from dvrk_simulator_base.command_mailbox import CommandMailboxes
+from dvrk_simulator_base.cartesian_command import CartesianCommand, resolve_cartesian_command
+from dvrk_simulator_base.publication_frames import with_publication_frames
 from dvrk_simulator_base.operating_state import CRTKOperatingState
 from dvrk_simulator_base.rotations import quaternion_matrix_xyzw, rotation_to_quaternion_xyzw
 from dvrk_simulator_base.scene import SceneObject
@@ -20,6 +23,8 @@ from dvrk_simulator_base.types import IKResult, JointState, Pose, Twist
 
 from .backend import load_newton
 from .camera import CameraOptions, NewtonCameraRenderer
+from .camera_gl import NewtonOpenGLCameraRenderer
+from .camera_worker import NewtonCameraWorker
 from .configuration import GraspConfig
 from .errors import NewtonBackendError
 from .grasp import NewtonGraspManager
@@ -30,6 +35,7 @@ from .robot import (
 )
 from .scene_objects import LoadedSceneObject, add_scene_objects_to_builder
 from .urdf_materializer import MaterializedUrdf, materialize_virtual_robot
+from .urdf_chain import UrdfChain
 from .video import UnixFdVideoSink
 
 
@@ -57,6 +63,7 @@ class _NewtonArmState:
         self.commands = commands
         self.artifact: MaterializedUrdf | None = None
         self.robot: LoadedRobot | None = None
+        self.ik_chain: UrdfChain | None = None
 
         self.joint_setpoint = np.array(config.home_position, dtype=float, copy=True)
         self.joint_velocity = np.zeros_like(self.joint_setpoint)
@@ -75,9 +82,8 @@ class _NewtonArmState:
         self.jaw_upper = float(jaw_raw.get("upper", 1.39626))
         self.jaw_speed = float(jaw_raw.get("velocity", 0.4))
 
-        self.commands_applied = 0
-        self.commands_rejected = 0
-        self.commands_canceled = 0
+
+
 
         self.lower_limits = np.array([j.lower for j in config.joints], dtype=float)
         self.upper_limits = np.array([j.upper for j in config.joints], dtype=float)
@@ -93,12 +99,11 @@ class _NewtonArmState:
         )
 
     def cancel_motion(self) -> None:
-        if self.joint_trajectory is not None or self.jaw_trajectory is not None:
-            self.commands_canceled += 1
         self.joint_trajectory = None
         self.jaw_trajectory = None
         self.joint_velocity.fill(0.0)
         self.jaw_velocity = 0.0
+
 
 
 class NewtonRuntime:
@@ -139,17 +144,18 @@ class NewtonRuntime:
         self._reset_requested = False
 
         self.viewer = None
-        self.camera_renderer: NewtonCameraRenderer | None = None
+        self.camera_renderer: NewtonCameraRenderer | NewtonOpenGLCameraRenderer | None = None
         self.camera_sink: UnixFdVideoSink | None = None
-        self._video_frames_pushed = 0
-        self._video_rate_sample_at = time.monotonic()
-        self._video_rate_sample_count = 0
-        self._last_camera_render_time = -1.0
+        self.camera_worker: NewtonCameraWorker | None = None
+        self._camera_model = None
         self._camera_interval = 0.0
+        self._next_camera_offer_at = 0.0
         self._q_buffer = None
         self._sequence = 0
         self._simulation_time = 0.0
         self._is_initialized = False
+        self._frame_snapshots: dict[str, ArmSnapshot] = {}
+        self.command_warnings: list[tuple[str, str]] = []
 
     def initialize(self) -> dict[str, ArmSnapshot]:
         """Materialize URDFs, build unified Newton model, and evaluate initial FK."""
@@ -235,6 +241,7 @@ class NewtonRuntime:
         # Cache initial state for resets
         self._initial_body_q = self.state.body_q.numpy().copy()
         self._initial_body_qd = self.state.body_qd.numpy().copy()
+        self._initialize_ik_chains()
         self._is_initialized = True
 
         if not self.options.headless:
@@ -253,127 +260,167 @@ class NewtonRuntime:
                 self.viewer = None
 
         if self.options.camera_options is not None and "ECM" in self.arms:
-            self.camera_renderer = NewtonCameraRenderer(
-                self.model, self.options.camera_options, device=self.device
+            # The camera worker owns its model and state. The Warp renderer
+            # refits a mutable BVH, and ViewerGL caches render geometry.
+            self._camera_model = self.builder.finalize(self.device)
+            if (
+                self._camera_model.body_count != self.model.body_count
+                or self._camera_model.particle_count != self.model.particle_count
+            ):
+                raise NewtonBackendError("camera model does not match simulation model")
+            renderer_type = (
+                NewtonOpenGLCameraRenderer
+                if self.options.camera_options.renderer == "opengl"
+                else NewtonCameraRenderer
+            )
+            self.camera_renderer = renderer_type(
+                self._camera_model, self.options.camera_options, device=self.device
             )
             self.camera_sink = UnixFdVideoSink(self.options.camera_options)
             self.camera_sink.start()
+            self.camera_worker = NewtonCameraWorker(
+                self.camera_renderer, self._camera_model.state(), self.camera_sink
+            )
+            self.camera_worker.start()
             self._camera_interval = 1.0 / self.options.camera_options.rate_hz
-            self._last_camera_render_time = -1.0
+            self._next_camera_offer_at = 0.0
 
-        return self.snapshots()
+        self._frame_snapshots = with_publication_frames(
+            self.snapshots(), [arm.config for arm in self.arms.values()]
+        )
+        return self._frame_snapshots
+
+    def _initialize_ik_chains(self) -> None:
+        """Use CPU IK only when its URDF poses agree with Newton at startup."""
+        import warnings
+
+        validation_state = self.model.state()
+        for arm_name, arm in self.arms.items():
+            try:
+                tool_label = self.model.body_label[arm.robot.tool_link_index].split("/")[-1]
+                chain = UrdfChain(
+                    arm.artifact.urdf_path,
+                    tool_label,
+                    tuple(joint.name for joint in arm.config.joints),
+                    arm.config.base_position,
+                    arm.config.base_orientation_xyzw,
+                )
+
+                def matches_newton(q: np.ndarray, body_tf: np.ndarray) -> bool:
+                    position, rotation, _ = chain.forward(q)
+                    return bool(
+                        np.linalg.norm(position - body_tf[:3]) < 5e-4
+                        and np.linalg.norm(
+                            rotation - quaternion_matrix_xyzw(body_tf[3:])
+                        ) < 5e-3
+                    )
+
+                if not matches_newton(
+                    arm.joint_setpoint,
+                    self._initial_body_q[arm.robot.tool_link_index],
+                ):
+                    raise ValueError("home pose differs from Newton FK")
+
+                probe = arm.joint_setpoint.copy()
+                for index, joint in enumerate(arm.config.joints):
+                    amount = 0.002 if joint.type == "prismatic" else 0.02
+                    if joint.upper - probe[index] >= amount:
+                        probe[index] += amount
+                    elif probe[index] - joint.lower >= amount:
+                        probe[index] -= amount
+                if not np.array_equal(probe, arm.joint_setpoint):
+                    probe_joint_q = self._q_buffer.copy()
+                    for index, q_index in enumerate(arm.robot.controlled_q_indices):
+                        probe_joint_q[q_index] = probe[index]
+                    validation_state.joint_q.assign(
+                        self.wp.array(probe_joint_q, dtype=float, device=self.device)
+                    )
+                    self.newton.eval_fk(
+                        self.model,
+                        validation_state.joint_q,
+                        validation_state.joint_qd,
+                        validation_state,
+                    )
+                    body_tf = validation_state.body_q.numpy()[arm.robot.tool_link_index]
+                    if not matches_newton(probe, body_tf):
+                        raise ValueError("perturbed pose differs from Newton FK")
+                arm.ik_chain = chain
+            except (ValueError, KeyError, ET.ParseError) as error:
+                warnings.warn(
+                    f"{arm_name}: CPU IK unavailable ({error}); using slower Newton FK IK",
+                    stacklevel=2,
+                )
 
     def is_connected(self) -> bool:
         return self._is_initialized and (self.viewer is None or self.viewer.is_running())
 
-    def prepare_step(self, now_ns: int, now: float) -> None:
+    def prepare_step(self, now: float) -> None:
         """Process incoming CRTK commands and advance trajectories."""
-        dt = 1.0 / self.options.simulation_rate_hz
-
         for arm_name, arm in self.arms.items():
             if arm.move_failure_pending:
                 arm.move_failure_pending = False
-
-            # Drain commands
             for command in arm.commands.drain():
-                if command.channel == "state_command":
+                if command.channel == 'state_command':
                     success, _ = arm.operating_state.command(command.payload)
                     if not success:
-                        arm.commands_rejected += 1
                         continue
-                    arm.commands_applied += 1
                     arm.operating_state_event_pending = True
                     if not arm.operating_state.accepts_motion:
                         arm.cancel_motion()
                     continue
-
                 if not arm.operating_state.accepts_motion:
-                    arm.commands_rejected += 1
-                    if command.channel in {"move_jp", "move_cp", "jaw/move_jp"}:
+                    if command.channel in {'move_jp', 'move_cp', 'jaw/move_jp'}:
                         arm.move_failure_pending = True
                     continue
-
-                # Joint position commands
-                if command.channel in {"servo_jp", "move_jp"}:
+                if command.channel in {'servo_jp', 'move_jp'}:
                     target = np.asarray(command.payload, dtype=float)
                     if not arm.valid_joint_target(target):
-                        arm.commands_rejected += 1
-                        if command.channel == "move_jp":
+                        if command.channel == 'move_jp':
                             arm.move_failure_pending = True
                         continue
-                    if command.channel == "servo_jp":
-                        if arm.joint_trajectory is not None:
-                            arm.commands_canceled += 1
+                    if command.channel == 'servo_jp':
                         arm.joint_trajectory = None
                         arm.joint_setpoint = target.copy()
                         arm.joint_velocity.fill(0.0)
                     else:
-                        if arm.joint_trajectory is not None:
-                            arm.commands_canceled += 1
-                        arm.joint_trajectory = JointTrajectory(
-                            arm.joint_setpoint,
-                            target,
-                            arm.max_velocities,
-                            now,
-                        )
-                    arm.commands_applied += 1
+                        arm.joint_trajectory = JointTrajectory(arm.joint_setpoint, target, arm.max_velocities, now)
                     continue
-
-                # Cartesian position commands
-                if command.channel in {"servo_cp", "move_cp"}:
-                    ik_res = self.compute_ik(arm_name, command.payload, arm.joint_setpoint)
+                if command.channel in {'servo_cp', 'move_cp'}:
+                    target = command.payload
+                    if isinstance(target, CartesianCommand):
+                        try:
+                            target = self.resolve_cartesian_target(arm_name, target)
+                        except (TypeError, ValueError, AttributeError) as error:
+                            self.command_warnings.append((arm_name, f'rejected {command.channel}: {error}'))
+                            if command.channel == 'move_cp':
+                                arm.move_failure_pending = True
+                            continue
+                    ik_res = self.compute_ik(arm_name, target, arm.joint_setpoint)
                     if not ik_res.success or not arm.valid_joint_target(ik_res.position):
-                        arm.commands_rejected += 1
-                        if command.channel == "move_cp":
+                        self.command_warnings.append((arm_name, f'rejected {command.channel}: IK failed or joint limits exceeded'))
+                        if command.channel == 'move_cp':
                             arm.move_failure_pending = True
                         continue
-                    if command.channel == "servo_cp":
-                        if arm.joint_trajectory is not None:
-                            arm.commands_canceled += 1
+                    if command.channel == 'servo_cp':
                         arm.joint_trajectory = None
                         arm.joint_setpoint = ik_res.position.copy()
                         arm.joint_velocity.fill(0.0)
                     else:
-                        if arm.joint_trajectory is not None:
-                            arm.commands_canceled += 1
-                        arm.joint_trajectory = JointTrajectory(
-                            arm.joint_setpoint,
-                            ik_res.position,
-                            arm.max_velocities,
-                            now,
-                        )
-                    arm.commands_applied += 1
+                        arm.joint_trajectory = JointTrajectory(arm.joint_setpoint, ik_res.position, arm.max_velocities, now)
                     continue
-
-                # Jaw commands
-                if command.channel in {"jaw/servo_jp", "jaw/move_jp"}:
+                if command.channel in {'jaw/servo_jp', 'jaw/move_jp'}:
                     target = float(command.payload)
-                    if not np.isfinite(target) or not (arm.jaw_lower <= target <= arm.jaw_upper):
-                        arm.commands_rejected += 1
-                        if command.channel == "jaw/move_jp":
+                    if not np.isfinite(target) or not arm.jaw_lower <= target <= arm.jaw_upper:
+                        if command.channel == 'jaw/move_jp':
                             arm.move_failure_pending = True
                         continue
-                    if command.channel == "jaw/servo_jp":
-                        if arm.jaw_trajectory is not None:
-                            arm.commands_canceled += 1
+                    if command.channel == 'jaw/servo_jp':
                         arm.jaw_trajectory = None
                         arm.jaw_setpoint = target
                         arm.jaw_velocity = 0.0
                     else:
-                        if arm.jaw_trajectory is not None:
-                            arm.commands_canceled += 1
-                        arm.jaw_trajectory = JointTrajectory(
-                            np.array([arm.jaw_setpoint]),
-                            np.array([target]),
-                            [arm.jaw_speed],
-                            now,
-                        )
-                    arm.commands_applied += 1
+                        arm.jaw_trajectory = JointTrajectory(np.array([arm.jaw_setpoint]), np.array([target]), [arm.jaw_speed], now)
                     continue
-
-                arm.commands_rejected += 1
-
-            # Advance trajectories
             if arm.joint_trajectory is not None:
                 sample = arm.joint_trajectory.sample(now)
                 arm.joint_setpoint = sample.position.copy()
@@ -381,7 +428,6 @@ class NewtonRuntime:
                 if sample.complete:
                     arm.joint_trajectory = None
                     arm.joint_velocity.fill(0.0)
-
             if arm.jaw_trajectory is not None:
                 jaw_sample = arm.jaw_trajectory.sample(now)
                 arm.jaw_setpoint = float(jaw_sample.position[0])
@@ -389,8 +435,6 @@ class NewtonRuntime:
                 if jaw_sample.complete:
                     arm.jaw_trajectory = None
                     arm.jaw_velocity = 0.0
-
-            # Update q buffer
             for i, q_idx in enumerate(arm.robot.controlled_q_indices):
                 self._q_buffer[q_idx] = arm.joint_setpoint[i]
             if arm.robot.jaw_q_index is not None:
@@ -430,19 +474,16 @@ class NewtonRuntime:
         self.newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state)
 
     def step(self) -> dict[str, ArmSnapshot]:
-        """Perform one complete simulation update cycle."""
+        """Consume commands and advance one complete scene step."""
         if self._reset_requested:
             self._reset_scene()
             self._reset_requested = False
-        now_ns = time.monotonic_ns()
-        self.prepare_step(now_ns, now_ns * 1e-9)
-        return self.finish_step()
+        self.prepare_step(time.monotonic())
+        self._frame_snapshots = self.finish_step()
+        return self._frame_snapshots
 
     def finish_step(self) -> dict[str, ArmSnapshot]:
         """Apply joint configuration to state, compute FK, step dynamics & grasp, and create snapshots."""
-        # 1. Update robot kinematics and velocities. Newton derives body_qd from
-        # joint_qd during FK; leaving joint_qd stale makes grasped objects appear
-        # stationary even while the commanded arm is moving.
         joint_qd = self.state.joint_qd.numpy()
         joint_qd.fill(0.0)
         for arm in self.arms.values():
@@ -455,79 +496,56 @@ class NewtonRuntime:
         self.state.joint_q.assign(self.wp.array(self._q_buffer, dtype=float, device=self.device))
         self.state.joint_qd.assign(self.wp.array(joint_qd, dtype=float, device=self.device))
         self.newton.eval_fk(self.model, self.state.joint_q, self.state.joint_qd, self.state)
-
-        # 2. Collision detection and grasp management
         snapshots = self.snapshots()
-
         if self.collision is not None:
             self.collision.collide(self.state, self.contacts)
-
         body_q_np = self.state.body_q.numpy()
         body_qd_np = self.state.body_qd.numpy()
-
         if self.grasp_manager is not None:
             self.grasp_manager.step(snapshots, self.contacts, body_q_np, body_qd_np)
             self.state.body_q.assign(self.wp.array(body_q_np, dtype=self.wp.transform, device=self.device))
             self.state.body_qd.assign(self.wp.array(body_qd_np, dtype=self.wp.spatial_vector, device=self.device))
-
-        # 3. Step physics solver for dynamic objects
         if self.solver is not None and self._dynamic_body_indices:
             dt = 1.0 / self.options.simulation_rate_hz
             self.solver.step(self.state, self._state_out, self.control, self.contacts, dt)
             out_q = self._state_out.body_q.numpy()
             out_qd = self._state_out.body_qd.numpy()
-
-            grasped_objects = {
-                att.object_body_index for att in (
-                    self.grasp_manager.attachments.values() if self.grasp_manager else ()
-                )
-            }
+            grasped_objects = {att.object_body_index for att in (self.grasp_manager.attachments.values() if self.grasp_manager else ())}
             for b_idx in self._dynamic_body_indices:
                 if b_idx not in grasped_objects:
                     body_q_np[b_idx] = out_q[b_idx]
                     body_qd_np[b_idx] = out_qd[b_idx]
-
             if self.grasp_manager is not None and self.grasp_manager.attachments:
                 self.grasp_manager.step(snapshots, None, body_q_np, body_qd_np)
-
             for b_idx, q_start in self._dynamic_body_joint_q.items():
-                self._q_buffer[q_start : q_start + 7] = body_q_np[b_idx]
-
+                self._q_buffer[q_start:q_start + 7] = body_q_np[b_idx]
             self.state.body_q.assign(self.wp.array(body_q_np, dtype=self.wp.transform, device=self.device))
             self.state.body_qd.assign(self.wp.array(body_qd_np, dtype=self.wp.spatial_vector, device=self.device))
-
         self._simulation_time += 1.0 / self.options.simulation_rate_hz
         self._sequence += 1
-
         if self.viewer is not None and self.viewer.is_running():
             self.viewer.begin_frame(self._simulation_time)
             self.viewer.log_state(self.state)
             self.viewer.end_frame()
-
-        snapshots = self.snapshots()
-        if (
-            self.camera_sink is not None
-            and self.camera_renderer is not None
-            and "ECM" in snapshots
-            and snapshots["ECM"].measured_cp_world is not None
-        ):
-            if (self._simulation_time - self._last_camera_render_time) >= (self._camera_interval - 1e-6):
-                frame = self.camera_renderer.render(
-                    self.state,
-                    snapshots["ECM"].measured_cp_world,
-                    self._simulation_time,
-                )
-                self.camera_sink.push(frame)
-                self._video_frames_pushed += 1
-                self._last_camera_render_time = self._simulation_time
-
+        snapshots = self.snapshots(body_q_np)
+        if self.camera_worker is not None:
+            self.camera_worker.raise_if_failed()
+        if self.camera_worker is not None and 'ECM' in snapshots and (snapshots['ECM'].measured_cp_world is not None):
+            now = time.monotonic()
+            if now >= self._next_camera_offer_at:
+                particle_q = self.state.particle_q.numpy() if self.model.particle_count else None
+                self.camera_worker.offer(body_q_np, particle_q, snapshots['ECM'].measured_cp_world, self._simulation_time)
+                self._next_camera_offer_at += self._camera_interval
+                if self._next_camera_offer_at <= now:
+                    self._next_camera_offer_at = now + self._camera_interval
         for arm in self.arms.values():
             arm.operating_state_event_pending = False
-        return snapshots
+        return with_publication_frames(snapshots, [arm.config for arm in self.arms.values()])
 
-    def snapshots(self) -> dict[str, ArmSnapshot]:
+    def snapshots(self, body_poses: np.ndarray | None = None) -> dict[str, ArmSnapshot]:
         """Extract ArmSnapshot for each loaded robot arm."""
-        body_poses = self.state.body_q.numpy()
+        if body_poses is None:
+            body_poses = self.state.body_q.numpy()
         result: dict[str, ArmSnapshot] = {}
 
         for arm_name, arm in self.arms.items():
@@ -573,6 +591,21 @@ class NewtonRuntime:
 
         return result
 
+    def resolve_cartesian_target(self, arm_name: str, command: CartesianCommand) -> Pose:
+        """Use the completed scene at this step's start, independent of ROS lag.
+
+        All commands in a step use the same measured ECM pose. An ECM command
+        received alongside a PSM command takes effect in the subsequent state.
+        """
+        config = self.arms[arm_name].config
+        ecm = next((arm for arm in self.arms.values() if arm.config.type == "ECM"), None)
+        has_ecm = config.type == "PSM" and ecm is not None
+        snapshot = self._frame_snapshots.get(ecm.config.name) if has_ecm else None
+        return resolve_cartesian_command(
+            command, config, None if snapshot is None else snapshot.measured_cp_world,
+            has_ecm=has_ecm,
+        )
+
     def compute_ik(
         self,
         arm_name: str,
@@ -583,7 +616,7 @@ class NewtonRuntime:
         position_tolerance_m: float = 1e-4,
         orientation_tolerance_rad: float = 1e-3,
     ) -> IKResult:
-        """Compute numerical damped least-squares IK using Newton forward kinematics."""
+        """Solve Cartesian IK using validated CPU kinematics or Newton FK."""
         arm = self.arms.get(arm_name)
         if arm is None or arm.robot is None:
             raise NewtonBackendError(f"robot {arm_name} is not loaded")
@@ -604,6 +637,30 @@ class NewtonRuntime:
         upper = arm.upper_limits
         controlled_q = arm.robot.controlled_q_indices
         tool_idx = arm.robot.tool_link_index
+
+        if arm.ik_chain is not None:
+            pos_err = 0.0
+            rot_err = 0.0
+            for iteration in range(max_iterations):
+                pos, rot, jacobian = arm.ik_chain.forward(q)
+                dp = target_pos - pos
+                dr = 0.5 * (
+                    np.cross(rot[:, 0], target_rot[:, 0])
+                    + np.cross(rot[:, 1], target_rot[:, 1])
+                    + np.cross(rot[:, 2], target_rot[:, 2])
+                )
+                pos_err = float(np.linalg.norm(dp))
+                rot_err = float(np.linalg.norm(dr))
+                if pos_err <= position_tolerance_m and rot_err <= orientation_tolerance_rad:
+                    return IKResult(q, True, iteration, pos_err, rot_err, "converged")
+
+                error = np.concatenate((dp, dr))
+                damping = 1e-4 * np.eye(6)
+                delta = jacobian.T @ np.linalg.solve(
+                    jacobian @ jacobian.T + damping, error
+                )
+                q = np.clip(q + np.clip(delta, -0.05, 0.05), lower, upper)
+            return IKResult(q, False, max_iterations, pos_err, rot_err, "did not converge")
 
         temp_q = self._q_buffer.copy()
 
@@ -661,30 +718,15 @@ class NewtonRuntime:
 
         return IKResult(q, False, max_iterations, pos_err, rot_err, "did not converge")
 
-    def run(self, publish_snapshots, should_continue=None) -> None:
-        """Paced simulation stepping loop."""
-        period = 1.0 / self.options.simulation_rate_hz
-        deadline = time.monotonic()
-        while self.is_connected() and (should_continue is None or should_continue()):
-            publish_snapshots(self.step())
-            deadline += period
-            remaining = deadline - time.monotonic()
-            if remaining > 0.0:
-                time.sleep(remaining)
-            else:
-                deadline = time.monotonic()
-
     def take_camera_rate_hz(self) -> float:
         """Return the camera frames pushed to the video sink over the last interval."""
-        now = time.monotonic()
-        elapsed = max(now - self._video_rate_sample_at, 1e-6)
-        count = self._video_frames_pushed - self._video_rate_sample_count
-        self._video_rate_sample_at = now
-        self._video_rate_sample_count = self._video_frames_pushed
-        return count / elapsed
+        return self.camera_worker.take_rate_hz() if self.camera_worker else 0.0
 
     def shutdown(self) -> None:
         """Cleanup runtime resources."""
+        if self.camera_worker is not None:
+            self.camera_worker.close()
+            self.camera_worker = None
         if self.viewer is not None:
             self.viewer.close()
             self.viewer = None
@@ -692,6 +734,7 @@ class NewtonRuntime:
             self.camera_sink.close()
             self.camera_sink = None
         self.camera_renderer = None
+        self._camera_model = None
         self._is_initialized = False
         self.model = None
         self.state = None

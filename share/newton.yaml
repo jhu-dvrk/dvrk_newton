@@ -20,6 +20,6 @@ device: cuda:0
 generated_root: null
 headless: false
 rigid_gap_m: 0.005
-scene: null
+scene: ECM_PSM1_PSM2_PSM3.yaml
 simulation_rate_hz: 120.0
 state_publish_rate_hz: 100.0
