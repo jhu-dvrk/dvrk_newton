@@ -1,5 +1,3 @@
-from pathlib import Path
-
 from dvrk_newton import python_runtime
 
 

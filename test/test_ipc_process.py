@@ -1,10 +1,5 @@
 """Run the actual IPC worker loop in a fresh interpreter with a small backend."""
 
-from dataclasses import replace
-import os
-from pathlib import Path
-import subprocess
-import sys
 import time
 from types import SimpleNamespace
 
@@ -12,13 +7,11 @@ import numpy as np
 import pytest
 
 from dvrk_simulator_base import process as ipc_runtime
-from dvrk_simulator_base.process import SimulationProcessError
-from dvrk_simulator_base.cartesian_command import CartesianCommand, resolve_cartesian_command
+from dvrk_simulator_base.cartesian_command import CartesianCommand
 from dvrk_simulator_base.command_mailbox import CommandMailboxes
-from dvrk_simulator_base.publication_frames import with_publication_frames
 from dvrk_simulator_base.ros_interface import LatestSnapshot
-from dvrk_simulator_base.snapshots import ArmSnapshot, OperatingStateSnapshot
-from dvrk_simulator_base.types import JointState, Pose, Twist
+from dvrk_simulator_base.types import Pose
+from dvrk_newton.python_runtime import resolve_newton_python
 
 
 class FakeNode:
@@ -64,7 +57,8 @@ def test_real_newton_worker_moving_ecm_cartesian_command_and_state(tmp_path, mon
     - {config: ECM.yaml, endoscope: Si_straight}
     - {config: PSM1.yaml, instrument: '420006'}
 """)
-    process = ipc_runtime.SimulationProcess(sys.executable, "dvrk_newton.simulation_worker", {
+    python_bin = resolve_newton_python().path
+    process = ipc_runtime.SimulationProcess(python_bin, "dvrk_newton.simulation_worker", {
         "config": str(config), "scene": str(scene), "device": device, "headless": True,
     })
     node = FakeNode()

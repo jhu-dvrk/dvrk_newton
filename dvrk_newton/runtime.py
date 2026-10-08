@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import time
-from typing import Mapping, Sequence
+from typing import Iterable, Mapping, Sequence
 import xml.etree.ElementTree as ET
 
 import numpy as np
@@ -15,7 +15,7 @@ from dvrk_simulator_base.command_mailbox import CommandMailboxes
 from dvrk_simulator_base.cartesian_command import CartesianCommand, resolve_cartesian_command
 from dvrk_simulator_base.publication_frames import with_publication_frames
 from dvrk_simulator_base.operating_state import CRTKOperatingState
-from dvrk_simulator_base.rotations import quaternion_matrix_xyzw, rotation_to_quaternion_xyzw
+from dvrk_simulator_base.rotations import quaternion_matrix_xyzw
 from dvrk_simulator_base.scene import SceneObject
 from dvrk_simulator_base.snapshots import ArmSnapshot, OperatingStateSnapshot
 from dvrk_simulator_base.trajectory import JointTrajectory

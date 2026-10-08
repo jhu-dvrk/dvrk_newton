@@ -7,8 +7,6 @@ from pathlib import Path
 from typing import Any, Iterable
 import xml.etree.ElementTree as ET
 
-import numpy as np
-
 from .errors import NewtonBackendError
 
 

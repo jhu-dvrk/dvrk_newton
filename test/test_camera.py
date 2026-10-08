@@ -1,7 +1,4 @@
-from pathlib import Path
-
 import numpy as np
-import pytest
 
 from dvrk_simulator_base.scene import SceneCamera
 from dvrk_simulator_base.types import Pose
@@ -38,7 +35,6 @@ def test_scene_camera_parses_unixfd():
 
 def test_newton_camera_renderer_stereo():
     import newton
-    import warp as wp
 
     builder = newton.ModelBuilder()
     model = builder.finalize("cuda:0")

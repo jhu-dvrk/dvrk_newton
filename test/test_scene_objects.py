@@ -1,9 +1,7 @@
 """Unit tests for dvrk_newton scene object loading and asset resolution."""
 
-from pathlib import Path
 import pytest
 
-from ament_index_python.packages import get_package_share_directory
 from dvrk_simulator_base.scene import SceneObject
 from dvrk_newton.errors import NewtonBackendError
 from dvrk_newton.scene_objects import add_scene_objects_to_builder, resolve_asset_uri
