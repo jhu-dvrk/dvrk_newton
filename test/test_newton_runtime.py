@@ -1,6 +1,7 @@
 """Unit tests for dvrk_newton materializer, robot mapping, and runtime."""
 
 import numpy as np
+import os
 import pytest
 
 from dvrk_simulator_base.command_mailbox import CommandMailboxes
@@ -20,6 +21,29 @@ def psm1_config():
 @pytest.fixture
 def ecm_config():
     return load_robot_config(Path(get_package_share_directory("dvrk_arm_description")) / "arms/ECM.yaml", endoscope="Si_straight")
+
+
+@pytest.mark.skipif(not os.environ.get("DISPLAY"), reason="preview requires an X display")
+def test_preview_mouse_drag_preserves_rendering(psm1_config):
+    from pyglet.window import key, mouse
+
+    runtime = NewtonRuntime(
+        [psm1_config], NewtonRuntimeOptions(device="cuda:0", headless=False),
+        {"PSM1": CommandMailboxes()},
+    )
+    try:
+        runtime.initialize()
+        assert runtime.viewer is not None
+        for button, modifiers in (
+            (mouse.LEFT, 0),
+            (mouse.MIDDLE, 0),
+            (mouse.MIDDLE, key.MOD_SHIFT),
+            (mouse.MIDDLE, key.MOD_CTRL),
+        ):
+            runtime.viewer.on_mouse_drag(640, 360, 5, 3, button, modifiers)
+            assert runtime.step()["PSM1"].valid
+    finally:
+        runtime.shutdown()
 
 
 def test_materializer_psm_and_ecm():
@@ -101,4 +125,3 @@ def test_simulator_config_headless(tmp_path):
     cfg_file.write_text("headless: false\n")
     cfg = load_simulator_config(cfg_file)
     assert cfg.headless is False
-

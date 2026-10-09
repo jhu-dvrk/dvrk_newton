@@ -247,10 +247,11 @@ class NewtonRuntime:
         if not self.options.headless:
             try:
                 from newton.viewer import ViewerGL
+                from pyglet.math import Vec3
                 self.viewer = ViewerGL(width=1280, height=720, headless=False)
                 self.viewer.set_model(self.model)
-                self.viewer.camera.pos = self.wp.vec3(0.5, -0.8, 0.4)
-                self.viewer.camera.look_at(self.wp.vec3(0.0, 0.0, 0.1))
+                self.viewer.camera.pos = Vec3(0.5, -0.8, 0.4)
+                self.viewer.camera.look_at(Vec3(0.0, 0.0, 0.1))
                 self.viewer.begin_frame(0.0)
                 self.viewer.log_state(self.state)
                 self.viewer.end_frame()
