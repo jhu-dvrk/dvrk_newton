@@ -7,14 +7,14 @@ from dvrk_simulator_base.configuration import PoseGraspConfig as GraspConfig
 
 
 @dataclass(frozen=True)
-class NewtonSimulatorConfig(RuntimeConfig):
+class SimulatorConfig(RuntimeConfig):
     device: str = "cuda:0"
     rigid_gap_m: float = 0.005
     grasp: GraspConfig | None = None
 
 
 def load_simulator_config(path):
-    return load_runtime_config(path, NewtonSimulatorConfig, grasp_type=GraspConfig)
+    return load_runtime_config(path, SimulatorConfig, grasp_type=GraspConfig)
 
 
 def scene_search_paths(config_path):

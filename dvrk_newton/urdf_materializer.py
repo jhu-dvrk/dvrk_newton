@@ -8,14 +8,14 @@ from pathlib import Path
 from .errors import NewtonBackendError
 from dvrk_simulator_base.urdf_materializer import (
     MaterializedUrdf,
+    default_generated_root as _default_generated_root,
     materialize_virtual_robot as _materialize_virtual_robot,
 )
 
 
 def default_generated_root() -> Path:
     """Return the user cache directory for Newton artifacts."""
-    cache_root = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-    return (cache_root / "dvrk_newton").resolve()
+    return _default_generated_root("dvrk_newton")
 
 
 def materialize_virtual_robot(

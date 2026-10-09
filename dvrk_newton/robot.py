@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Iterable
 import xml.etree.ElementTree as ET
 
+from dvrk_simulator_base.urdf_chain import extract_mimic_joints
 from .errors import NewtonBackendError
 
 
@@ -159,34 +160,28 @@ def build_robot_mapping(
         jaw_q_idx = joint_q_indices[f"{robot_name}_jaw"]
 
     # Parse mimic joints from URDF
-    mimic_joints: list[MimicJoint] = []
     try:
-        root = ET.parse(path).getroot()
-    except ET.ParseError as error:
-        raise NewtonBackendError(f"materialized URDF is invalid XML: {error}") from error
+        parsed_mimics = extract_mimic_joints(path, error_cls=NewtonBackendError)
+    except NewtonBackendError:
+        raise
+    except Exception as error:
+        raise NewtonBackendError(f"materialized URDF is invalid: {error}") from error
 
-    for joint_element in root.findall("joint"):
-        mimic = joint_element.find("mimic")
-        if mimic is None:
-            continue
-        j_name = joint_element.attrib.get("name", "")
-        src_name = mimic.attrib.get("joint", "")
-
-        j_key = f"{prefix}{j_name}" if f"{prefix}{j_name}" in joint_indices else j_name
-        src_key = f"{prefix}{src_name}" if f"{prefix}{src_name}" in joint_indices else src_name
+    mimic_joints: list[MimicJoint] = []
+    for m in parsed_mimics:
+        j_key = f"{prefix}{m.joint_name}" if f"{prefix}{m.joint_name}" in joint_indices else m.joint_name
+        src_key = f"{prefix}{m.source_joint_name}" if f"{prefix}{m.source_joint_name}" in joint_indices else m.source_joint_name
 
         if j_key in joint_indices and src_key in joint_indices:
             j_idx = joint_indices[j_key]
             src_idx = joint_indices[src_key]
             if j_key in joint_q_indices and src_key in joint_q_indices:
-                multiplier = float(mimic.attrib.get("multiplier", "1.0"))
-                offset = float(mimic.attrib.get("offset", "0.0"))
                 mimic_joints.append(
                     MimicJoint(
-                        joint_name=j_name,
-                        source_joint_name=src_name,
-                        multiplier=multiplier,
-                        offset=offset,
+                        joint_name=m.joint_name,
+                        source_joint_name=m.source_joint_name,
+                        multiplier=m.multiplier,
+                        offset=m.offset,
                         joint_index=j_idx,
                         source_joint_index=src_idx,
                         q_index=joint_q_indices[j_key],
