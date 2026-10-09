@@ -35,7 +35,7 @@ from .robot import (
 )
 from .scene_objects import LoadedSceneObject, add_scene_objects_to_builder
 from .urdf_materializer import MaterializedUrdf, materialize_virtual_robot
-from .urdf_chain import UrdfChain
+from dvrk_simulator_base.urdf_chain import UrdfChain
 from .video import UnixFdVideoSink
 
 

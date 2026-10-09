@@ -2,9 +2,9 @@
 
 import pytest
 
-from dvrk_simulator_base.scene import SceneObject
+from dvrk_simulator_base.scene import SceneObject, resolve_asset_uri
 from dvrk_newton.errors import NewtonBackendError
-from dvrk_newton.scene_objects import add_scene_objects_to_builder, resolve_asset_uri
+from dvrk_newton.scene_objects import add_scene_objects_to_builder
 
 
 def test_resolve_asset_uri():
@@ -15,15 +15,15 @@ def test_resolve_asset_uri():
 
     # Non-existent package
     with pytest.raises(NewtonBackendError, match="could not locate package"):
-        resolve_asset_uri("package://non_existent_pkg_12345/foo.urdf")
+        resolve_asset_uri("package://non_existent_pkg_12345/foo.urdf", error_cls=NewtonBackendError)
 
     # Non-existent file
     with pytest.raises(NewtonBackendError, match="does not exist"):
-        resolve_asset_uri("package://dvrk_simulator_base/share/assets/table/non_existent.urdf")
+        resolve_asset_uri("package://dvrk_simulator_base/share/assets/table/non_existent.urdf", error_cls=NewtonBackendError)
 
     # Relative non-package path
     with pytest.raises(NewtonBackendError, match="must be package:// URI"):
-        resolve_asset_uri("relative/path/to/asset.urdf")
+        resolve_asset_uri("relative/path/to/asset.urdf", error_cls=NewtonBackendError)
 
 
 def test_add_scene_objects_to_builder():
