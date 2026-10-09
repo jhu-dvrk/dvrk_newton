@@ -25,7 +25,6 @@ def test_scene_camera_parses_unixfd():
     )
     options = CameraOptions.from_scene(camera)
     assert options is not None
-    assert options.enabled
     assert options.mode == "stereo"
     assert options.socket_path == "@dvrk:newton:stereo_source"
     assert (options.width, options.height, options.rate_hz) == (1280, 720, 30.0)

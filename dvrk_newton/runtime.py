@@ -14,11 +14,10 @@ from dvrk_arm_description import RobotConfig
 from dvrk_simulator_base.command_mailbox import CommandMailboxes
 from dvrk_simulator_base.cartesian_command import CartesianCommand, resolve_cartesian_command
 from dvrk_simulator_base.publication_frames import with_publication_frames
-from dvrk_simulator_base.operating_state import CRTKOperatingState
+from dvrk_simulator_base.arm_controller import ArmController
 from dvrk_simulator_base.rotations import quaternion_matrix_xyzw
 from dvrk_simulator_base.scene import SceneObject
 from dvrk_simulator_base.snapshots import ArmSnapshot, OperatingStateSnapshot
-from dvrk_simulator_base.trajectory import JointTrajectory
 from dvrk_simulator_base.types import IKResult, JointState, Pose, Twist
 
 from .backend import load_newton
@@ -51,59 +50,14 @@ class NewtonRuntimeOptions:
     rigid_gap_m: float = 0.005
 
 
-class _NewtonArmState:
-    """Per-arm state and command tracking."""
+class _NewtonArmState(ArmController):
+    """Common command state plus Newton's robot and kinematic artifacts."""
 
-    def __init__(
-        self,
-        config: RobotConfig,
-        commands: CommandMailboxes,
-    ) -> None:
-        self.config = config
-        self.commands = commands
+    def __init__(self, config, commands):
+        super().__init__(config, commands)
         self.artifact: MaterializedUrdf | None = None
         self.robot: LoadedRobot | None = None
         self.ik_chain: UrdfChain | None = None
-
-        self.joint_setpoint = np.array(config.home_position, dtype=float, copy=True)
-        self.joint_velocity = np.zeros_like(self.joint_setpoint)
-        self.jaw_setpoint = 0.0
-        self.jaw_velocity = 0.0
-
-        self.joint_trajectory: JointTrajectory | None = None
-        self.jaw_trajectory: JointTrajectory | None = None
-
-        self.operating_state = CRTKOperatingState(CRTKOperatingState.ENABLED)
-        self.operating_state_event_pending = False
-        self.move_failure_pending = False
-
-        jaw_raw = config.raw.get("robot", {}).get("jaw", {})
-        self.jaw_lower = float(jaw_raw.get("lower", -0.349066))
-        self.jaw_upper = float(jaw_raw.get("upper", 1.39626))
-        self.jaw_speed = float(jaw_raw.get("velocity", 0.4))
-
-
-
-
-        self.lower_limits = np.array([j.lower for j in config.joints], dtype=float)
-        self.upper_limits = np.array([j.upper for j in config.joints], dtype=float)
-        self.max_velocities = np.array([j.velocity for j in config.joints], dtype=float)
-
-    def valid_joint_target(self, target: np.ndarray) -> bool:
-        if len(target) != len(self.config.joints):
-            return False
-        return bool(
-            np.all(np.isfinite(target))
-            and np.all(target >= self.lower_limits - 1e-6)
-            and np.all(target <= self.upper_limits + 1e-6)
-        )
-
-    def cancel_motion(self) -> None:
-        self.joint_trajectory = None
-        self.jaw_trajectory = None
-        self.joint_velocity.fill(0.0)
-        self.jaw_velocity = 0.0
-
 
 
 class NewtonRuntime:
@@ -358,84 +312,13 @@ class NewtonRuntime:
     def prepare_step(self, now: float) -> None:
         """Process incoming CRTK commands and advance trajectories."""
         for arm_name, arm in self.arms.items():
-            if arm.move_failure_pending:
-                arm.move_failure_pending = False
-            for command in arm.commands.drain():
-                if command.channel == 'state_command':
-                    success, _ = arm.operating_state.command(command.payload)
-                    if not success:
-                        continue
-                    arm.operating_state_event_pending = True
-                    if not arm.operating_state.accepts_motion:
-                        arm.cancel_motion()
-                    continue
-                if not arm.operating_state.accepts_motion:
-                    if command.channel in {'move_jp', 'move_cp', 'jaw/move_jp'}:
-                        arm.move_failure_pending = True
-                    continue
-                if command.channel in {'servo_jp', 'move_jp'}:
-                    target = np.asarray(command.payload, dtype=float)
-                    if not arm.valid_joint_target(target):
-                        if command.channel == 'move_jp':
-                            arm.move_failure_pending = True
-                        continue
-                    if command.channel == 'servo_jp':
-                        arm.joint_trajectory = None
-                        arm.joint_setpoint = target.copy()
-                        arm.joint_velocity.fill(0.0)
-                    else:
-                        arm.joint_trajectory = JointTrajectory(arm.joint_setpoint, target, arm.max_velocities, now)
-                    continue
-                if command.channel in {'servo_cp', 'move_cp'}:
-                    target = command.payload
-                    if isinstance(target, CartesianCommand):
-                        try:
-                            target = self.resolve_cartesian_target(arm_name, target)
-                        except (TypeError, ValueError, AttributeError) as error:
-                            self.command_warnings.append((arm_name, f'rejected {command.channel}: {error}'))
-                            if command.channel == 'move_cp':
-                                arm.move_failure_pending = True
-                            continue
-                    ik_res = self.compute_ik(arm_name, target, arm.joint_setpoint)
-                    if not ik_res.success or not arm.valid_joint_target(ik_res.position):
-                        self.command_warnings.append((arm_name, f'rejected {command.channel}: IK failed or joint limits exceeded'))
-                        if command.channel == 'move_cp':
-                            arm.move_failure_pending = True
-                        continue
-                    if command.channel == 'servo_cp':
-                        arm.joint_trajectory = None
-                        arm.joint_setpoint = ik_res.position.copy()
-                        arm.joint_velocity.fill(0.0)
-                    else:
-                        arm.joint_trajectory = JointTrajectory(arm.joint_setpoint, ik_res.position, arm.max_velocities, now)
-                    continue
-                if command.channel in {'jaw/servo_jp', 'jaw/move_jp'}:
-                    target = float(command.payload)
-                    if not np.isfinite(target) or not arm.jaw_lower <= target <= arm.jaw_upper:
-                        if command.channel == 'jaw/move_jp':
-                            arm.move_failure_pending = True
-                        continue
-                    if command.channel == 'jaw/servo_jp':
-                        arm.jaw_trajectory = None
-                        arm.jaw_setpoint = target
-                        arm.jaw_velocity = 0.0
-                    else:
-                        arm.jaw_trajectory = JointTrajectory(np.array([arm.jaw_setpoint]), np.array([target]), [arm.jaw_speed], now)
-                    continue
-            if arm.joint_trajectory is not None:
-                sample = arm.joint_trajectory.sample(now)
-                arm.joint_setpoint = sample.position.copy()
-                arm.joint_velocity = sample.velocity.copy()
-                if sample.complete:
-                    arm.joint_trajectory = None
-                    arm.joint_velocity.fill(0.0)
-            if arm.jaw_trajectory is not None:
-                jaw_sample = arm.jaw_trajectory.sample(now)
-                arm.jaw_setpoint = float(jaw_sample.position[0])
-                arm.jaw_velocity = float(jaw_sample.velocity[0])
-                if jaw_sample.complete:
-                    arm.jaw_trajectory = None
-                    arm.jaw_velocity = 0.0
+            arm.advance_commands(
+                now,
+                lambda target, seed: self.compute_ik(arm_name, target, seed),
+                lambda target: self.resolve_cartesian_target(arm_name, target),
+            )
+            self.command_warnings.extend((arm_name, warning) for warning in arm.command_warnings)
+            arm.command_warnings.clear()
             for i, q_idx in enumerate(arm.robot.controlled_q_indices):
                 self._q_buffer[q_idx] = arm.joint_setpoint[i]
             if arm.robot.jaw_q_index is not None:
@@ -450,11 +333,7 @@ class NewtonRuntime:
         if self.grasp_manager is not None:
             self.grasp_manager.release_all()
         for arm in self.arms.values():
-            arm.joint_setpoint = np.array(arm.config.home_position, dtype=float, copy=True)
-            arm.joint_velocity.fill(0.0)
-            arm.jaw_setpoint = 0.0
-            arm.jaw_velocity = 0.0
-            arm.cancel_motion()
+            arm.reset_motion()
             for i, q_idx in enumerate(arm.robot.controlled_q_indices):
                 self._q_buffer[q_idx] = arm.joint_setpoint[i]
             if arm.robot.jaw_q_index is not None:

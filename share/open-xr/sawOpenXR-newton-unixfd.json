@@ -1,5 +1,4 @@
 {
-  "name": "OpenXR",
   "video": {
     "type": "side-by-side",
     "gst_input": "@dvrk:console:stereo_overlay"

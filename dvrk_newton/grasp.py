@@ -46,7 +46,6 @@ class NewtonGraspManager:
         self.break_distance = self.config.break_distance_m
         self.break_orientation = self.config.break_orientation_rad
         self.max_grasps_per_object = self.config.max_grasps_per_object
-        self.show_markers = self.config.show_grasps
 
         self.attachments: dict[str, NewtonGraspAttachment] = {}
         self.regrasp_blocked_arms: set[str] = set()
@@ -296,16 +295,4 @@ class NewtonGraspManager:
             self._last_tool_positions[attachment.arm_name] = np.asarray(
                 body_q_np[tool_idx, :3], dtype=float
             ).copy()
-
-    def marker_poses(self, body_q_np: np.ndarray) -> dict[str, tuple]:
-        """Return visual marker poses for active grasps."""
-        if not self.show_markers:
-            return {}
-        markers = {}
-        for arm_name, attachment in self.attachments.items():
-            obj_idx = attachment.object_body_index
-            pos = tuple(float(v) for v in body_q_np[obj_idx, :3])
-            rot = tuple(float(v) for v in body_q_np[obj_idx, 3:7])
-            markers[arm_name] = (pos, rot)
-        return markers
 

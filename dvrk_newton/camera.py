@@ -11,13 +11,13 @@ import numpy as np
 
 from dvrk_simulator_base.rotations import rotation_to_quaternion_xyzw
 from dvrk_simulator_base.types import Pose
+from dvrk_simulator_base.video import VideoFrame
 
 from .backend import load_newton
 
 
 @dataclass(frozen=True)
 class CameraOptions:
-    enabled: bool = True
     mode: str = "stereo"
     socket_path: str | Path = "@dvrk:newton:stereo_source"
     width: int = 1280
@@ -83,7 +83,6 @@ class CameraOptions:
             f"@dvrk:newton:{camera.mode}_source",
         )
         return cls(
-            enabled=True,
             mode=camera.mode,
             socket_path=socket_path,
             width=int(settings.get("width", 1280)),
@@ -97,11 +96,7 @@ class CameraOptions:
         )
 
 
-@dataclass(frozen=True)
-class VideoFrame:
-    rgba: np.ndarray
-    simulation_time: float
-    sequence: int
+
 
 
 class NewtonCameraRenderer:
