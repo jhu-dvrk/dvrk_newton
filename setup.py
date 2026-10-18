@@ -11,12 +11,7 @@ data_files = [
     ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
     (f"share/{package_name}", ["package.xml", "requirements.txt"]),
     (f"share/{package_name}/share", ["share/newton.yaml"]),
-    (f"share/{package_name}/share/open-xr", [
-        str(path) for path in sorted(Path("share/open-xr").glob("*"))
-        if path.is_file()
-    ]),
     (f"share/{package_name}/launch", [
-        "launch/open_xr.launch.py",
         "launch/simulator.launch.py",
     ]),
     (f"share/{package_name}/scripts", script_files),
