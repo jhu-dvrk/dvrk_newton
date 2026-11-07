@@ -195,13 +195,10 @@ def build_robot_mapping(
         f"{prefix}{robot_name}_tool_tip_link",
         f"{robot_name}_tool_tip",
         f"{prefix}tool_tip_link",
-        tool_frame,
+        f"{robot_name}_tip_link" if robot_name == "ECM" else tool_frame,
         f"{tool_frame}_link" if tool_frame else None,
         f"{robot_name}_tip_link",
         f"{prefix}{robot_name}_tip_link",
-        f"{robot_name}_endoscope_frame_link",
-        f"{prefix}{robot_name}_endoscope_frame_link",
-        f"{robot_name}_endoscope_link",
     )
     tool_link_idx: int | None = None
     for cand in candidates:

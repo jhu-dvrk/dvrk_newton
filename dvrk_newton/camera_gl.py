@@ -95,9 +95,9 @@ class NewtonOpenGLCameraRenderer:
             raise RuntimeError("OpenGL camera renderer has not started")
 
         position = optical_pose.position
-        forward = optical_pose.orientation[:, 0]
-        left = optical_pose.orientation[:, 1]
-        up = optical_pose.orientation[:, 2]
+        forward = optical_pose.orientation[:, 2]
+        left = -optical_pose.orientation[:, 0]
+        up = -optical_pose.orientation[:, 1]
         if self.options.mode == "stereo":
             half_baseline = 0.5 * self.options.baseline_m
             eye_positions = (

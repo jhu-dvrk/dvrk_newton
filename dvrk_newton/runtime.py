@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dvrk_simulator_base.cartesian_frames import optical_pose_from_view
+
 from dataclasses import dataclass
 from pathlib import Path
 import time
@@ -414,7 +416,7 @@ class NewtonRuntime:
             now = time.monotonic()
             if now >= self._next_camera_offer_at:
                 particle_q = self.state.particle_q.numpy() if self.model.particle_count else None
-                self.camera_worker.offer(body_q_np, particle_q, snapshots['ECM'].measured_cp_world, self._simulation_time)
+                self.camera_worker.offer(body_q_np, particle_q, optical_pose_from_view(snapshots['ECM'].measured_cp_world), self._simulation_time)
                 self._next_camera_offer_at += self._camera_interval
                 if self._next_camera_offer_at <= now:
                     self._next_camera_offer_at = now + self._camera_interval

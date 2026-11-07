@@ -143,12 +143,10 @@ class NewtonCameraRenderer:
         """Render a mono or stereo frame at the given ECM optical pose."""
         pos = optical_pose.position
         # ECM optical frame conventions:
-        # column 0 is forward (+X along endoscope)
-        # column 1 is left (+Y)
-        # column 2 is up (+Z)
-        forward = optical_pose.orientation[:, 0]
-        left = optical_pose.orientation[:, 1]
-        up = optical_pose.orientation[:, 2]
+        # +X right, +Y down, +Z forward (ROS optical).
+        forward = optical_pose.orientation[:, 2]
+        left = -optical_pose.orientation[:, 0]
+        up = -optical_pose.orientation[:, 1]
         right = -left
 
         # In camera coordinates for pinhole raytracing (OpenGL convention):
