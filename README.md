@@ -119,6 +119,11 @@ on a machine without a display, set `PYGLET_HEADLESS=1` before starting ROS.
 The existing `horizontal_fov_deg` setting is applied as a vertical FOV by the
 Warp camera helper. OpenGL retains that framing for compatibility.
 
+Both camera renderers include two white endoscope lights, 4 mm above and below
+the optical center. The lights follow the ECM position and orientation, including
+roll, and illuminate along the viewing direction. Stereo eyes share the same two
+lights. Set `scene.camera.endoscope_lights: false` to disable them.
+
 ### OpenXR Quest Surgeon Console
 Connects the patient cart simulation with the OpenXR surgeon console (`sawOpenXR`) and dVRK console video overlay over zero-copy GStreamer Unix-FD:
 ```bash

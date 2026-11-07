@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+import time
 
 import numpy as np
 
@@ -10,6 +11,7 @@ from dvrk_simulator_base.types import Pose
 
 from .backend import load_newton
 from .camera import CameraOptions, VideoFrame
+from .camera_lighting import endoscope_light_positions, install_opengl_endoscope_lights
 
 class NewtonOpenGLCameraRenderer:
     """Render full-pose mono or stereo views on the camera worker's GL context."""
@@ -63,6 +65,10 @@ class NewtonOpenGLCameraRenderer:
         viewer.set_model(self.model)
         # A video camera needs no viewer shadow-map pass.
         viewer.renderer.draw_shadows = False
+        if self.options.endoscope_lights:
+            # The replacement lights supply their own cone attenuation.
+            viewer.renderer.spotlight_enabled = False
+            install_opengl_endoscope_lights(viewer.renderer)
         self._camera = OpticalCamera(
             width=viewer.camera.width,
             height=viewer.camera.height,
@@ -93,6 +99,7 @@ class NewtonOpenGLCameraRenderer:
         """Render both eyes in one GL context and pack the existing RGBA transport."""
         if self.viewer is None or self._camera is None or self._rgb_target is None:
             raise RuntimeError("OpenGL camera renderer has not started")
+        source_timestamp_ns = time.time_ns()
 
         position = optical_pose.position
         forward = optical_pose.orientation[:, 2]
@@ -113,6 +120,11 @@ class NewtonOpenGLCameraRenderer:
 
         for eye_index, eye_position in enumerate(eye_positions):
             self._camera.set_pose(eye_position, forward, up)
+            if self.options.endoscope_lights:
+                # Newton reconstructs fragment positions relative to each eye.
+                self.viewer.renderer.endoscope_lights = (
+                    endoscope_light_positions(optical_pose) - eye_position, forward
+                )
             self.viewer.begin_frame(simulation_time)
             # ViewerGL keeps logged scene geometry between frames. Both eyes
             # use the same state, and log_state synchronizes CUDA with the CPU;
@@ -127,7 +139,10 @@ class NewtonOpenGLCameraRenderer:
             rgba[:, eye_index * width : (eye_index + 1) * width, :3] = rgb
 
         self.sequence += 1
-        return VideoFrame(rgba=rgba, simulation_time=simulation_time, sequence=self.sequence)
+        return VideoFrame(
+            rgba=rgba, simulation_time=simulation_time, sequence=self.sequence,
+            source_timestamp_ns=source_timestamp_ns,
+        )
 
     def close(self) -> None:
         """Destroy the GL context on the same thread that created it."""

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
+import time
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from dvrk_simulator_base.types import Pose
 from dvrk_simulator_base.video import VideoFrame
 
 from .backend import load_newton
+from .camera_lighting import endoscope_light_positions
 
 
 @dataclass(frozen=True)
@@ -28,6 +30,7 @@ class CameraOptions:
     far_m: float = 10.0
     baseline_m: float = 0.006
     renderer: str = "warp_raytrace"
+    endoscope_lights: bool = True
 
     def __post_init__(self) -> None:
         mode = str(self.mode).lower()
@@ -37,6 +40,8 @@ class CameraOptions:
             raise ValueError("camera mode must be 'mono' or 'stereo'")
         if renderer not in {"warp_raytrace", "opengl"}:
             raise ValueError("camera renderer must be 'warp_raytrace' or 'opengl'")
+        if not isinstance(self.endoscope_lights, bool):
+            raise ValueError("camera endoscope_lights must be a boolean")
         if socket_reference.startswith("@dvrk:"):
             if len(socket_reference.split(":")) != 3:
                 raise ValueError(
@@ -93,6 +98,7 @@ class CameraOptions:
             far_m=float(settings.get("far_clip_m", 10.0)),
             baseline_m=float(settings.get("baseline_m", 0.006)),
             renderer=str(settings.get("renderer", "warp_raytrace")),
+            endoscope_lights=settings.get("endoscope_lights", True),
         )
 
 
@@ -109,6 +115,18 @@ class NewtonCameraRenderer:
         self.model = model
 
         self.sensor = self.newton.sensors.SensorTiledCamera(model)
+        if options.endoscope_lights:
+            # Newton 1.6 exposes only a default directional-light helper. Its
+            # render context supports arrays of local spotlights internally.
+            context = self.sensor._SensorTiledCamera__render_context
+            light_type = self.newton.sensors.SensorTiledCamera.RenderLightType.SPOTLIGHT
+            context.lights_active = self.wp.array([True, True], dtype=self.wp.bool, device=self.device)
+            context.lights_type = self.wp.array([light_type, light_type], dtype=self.wp.int32, device=self.device)
+            context.lights_cast_shadow = self.wp.array([False, False], dtype=self.wp.bool, device=self.device)
+            self._light_positions = self.wp.zeros(2, dtype=self.wp.vec3f, device=self.device)
+            self._light_directions = self.wp.zeros(2, dtype=self.wp.vec3f, device=self.device)
+            context.lights_position = self._light_positions
+            context.lights_orientation = self._light_directions
         self.camera_count = 2 if options.mode == "stereo" else 1
         fov_rad = math.radians(options.horizontal_fov_degrees)
 
@@ -141,6 +159,7 @@ class NewtonCameraRenderer:
 
     def render(self, state: Any, optical_pose: Pose, simulation_time: float) -> VideoFrame:
         """Render a mono or stereo frame at the given ECM optical pose."""
+        source_timestamp_ns = time.time_ns()
         pos = optical_pose.position
         # ECM optical frame conventions:
         # +X right, +Y down, +Z forward (ROS optical).
@@ -166,6 +185,10 @@ class NewtonCameraRenderer:
             right_cam = self.wp.transform(self.wp.vec3(*right_pos), quat)
             cam_xforms = self.wp.array([[left_cam], [right_cam]], dtype=self.wp.transform, device=self.device)
 
+        if self.options.endoscope_lights:
+            self._light_positions.assign(endoscope_light_positions(optical_pose))
+            self._light_directions.assign(np.asarray([forward, forward], dtype=np.float32))
+
         self.model.bvh_refit_shapes(state)
         self.sensor.update(state, cam_xforms, self.rays, color_image=self.color_output)
 
@@ -184,4 +207,5 @@ class NewtonCameraRenderer:
             rgba=rgba,
             simulation_time=simulation_time,
             sequence=self.sequence,
+            source_timestamp_ns=source_timestamp_ns,
         )
