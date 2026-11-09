@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any
-import time
 
 import numpy as np
 
@@ -99,7 +98,6 @@ class NewtonOpenGLCameraRenderer:
         """Render both eyes in one GL context and pack the existing RGBA transport."""
         if self.viewer is None or self._camera is None or self._rgb_target is None:
             raise RuntimeError("OpenGL camera renderer has not started")
-        source_timestamp_ns = time.time_ns()
 
         position = optical_pose.position
         forward = optical_pose.orientation[:, 2]
@@ -141,7 +139,6 @@ class NewtonOpenGLCameraRenderer:
         self.sequence += 1
         return VideoFrame(
             rgba=rgba, simulation_time=simulation_time, sequence=self.sequence,
-            source_timestamp_ns=source_timestamp_ns,
         )
 
     def close(self) -> None:

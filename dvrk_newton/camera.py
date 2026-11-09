@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-import time
 from pathlib import Path
 from typing import Any
 
@@ -159,7 +158,6 @@ class NewtonCameraRenderer:
 
     def render(self, state: Any, optical_pose: Pose, simulation_time: float) -> VideoFrame:
         """Render a mono or stereo frame at the given ECM optical pose."""
-        source_timestamp_ns = time.time_ns()
         pos = optical_pose.position
         # ECM optical frame conventions:
         # +X right, +Y down, +Z forward (ROS optical).
@@ -207,5 +205,4 @@ class NewtonCameraRenderer:
             rgba=rgba,
             simulation_time=simulation_time,
             sequence=self.sequence,
-            source_timestamp_ns=source_timestamp_ns,
         )

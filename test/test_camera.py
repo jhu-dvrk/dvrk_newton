@@ -3,7 +3,6 @@ import os
 from pathlib import Path
 import subprocess
 import sys
-import time
 import pytest
 
 from dvrk_simulator_base.scene import SceneCamera
@@ -100,9 +99,7 @@ def _front_surface_brightness(renderer_type, enabled, opacity):
     ), device="cpu")
     try:
         renderer.start()
-        before_render = time.time_ns()
         frame = renderer.render(state, pose, 0.0)
-        assert before_render <= frame.source_timestamp_ns <= time.time_ns()
         # Sample the surface near the center of each stereo eye.
         centers = frame.rgba[10:14, (14, 15, 16, 17, 46, 47, 48, 49), :3]
         assert frame.rgba.shape == (24, 64, 4)
